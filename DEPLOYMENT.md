@@ -14,5 +14,10 @@ USDC used: `0x036CbD53842c5426634e7929541eC2318f3dCF7e` (Base Sepolia).
 
 | Contract Name    | Address | Tx Hash | Block | Timestamp |
 | ----------------- | ------- | ------- | ----- | --------- |
-| SentinelRegistry  |         |         |       |           |
-| SentinelPayment   |         |         |       |           |
+| SentinelRegistry  | `0x072A3A0C04Cf8CDcaf5B4A73a4Ed4fF5A841531f` | `0xecbbdd6ffb92ec2b3899b550462b184fadc9c17aa9932b8085eb952e8211c36f` | 49908957 | 2026-08-13T07:47:41Z |
+| SentinelPayment   | `0xcAC5B9d2817325E78090E3Ce4b9C299C819cF953` | `0x016fcfaff7ff9777f856069cf9ab44e73af466505a13aa2d169f5d01473bf8ba` | 49908963 | 2026-08-13T07:47:53Z |
+
+Wiring: `SentinelRegistry.setAuthorizedReporter(SentinelPayment, true)` — tx `0x4bfd9959d2f54e97456e8e13cdd275353d3fd7187dc1e2bb2cba1b94220fa7e6`, block 49908969, 2026-08-13T07:48:05Z.
+USDC used: `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` (Base mainnet).
+
+Note: addresses are identical to the Base Sepolia deployment above — expected, same wallet/nonce sequence produces the same CREATE address across chains.

@@ -1,0 +1,417 @@
+.app {
+  position: relative;
+  min-height: 100svh;
+  overflow-x: hidden;
+}
+
+/* ---------- Ambient particle background ---------- */
+
+.particle-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: #0a0a0a;
+}
+
+.particle-bg span {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(60px);
+  opacity: 0.10;
+  animation: drift linear infinite;
+}
+
+.particle-bg span:nth-child(1) {
+  width: 420px;
+  height: 420px;
+  left: -10%;
+  top: 5%;
+  background: #0052ff;
+  animation-duration: 34s;
+}
+
+.particle-bg span:nth-child(2) {
+  width: 360px;
+  height: 360px;
+  right: -8%;
+  top: 30%;
+  background: #8b5cf6;
+  animation-duration: 42s;
+  animation-direction: reverse;
+}
+
+.particle-bg span:nth-child(3) {
+  width: 300px;
+  height: 300px;
+  left: 20%;
+  bottom: -10%;
+  background: #0052ff;
+  animation-duration: 38s;
+}
+
+.particle-bg span:nth-child(4) {
+  width: 260px;
+  height: 260px;
+  right: 15%;
+  bottom: 5%;
+  background: #8b5cf6;
+  animation-duration: 46s;
+  animation-direction: reverse;
+}
+
+@keyframes drift {
+  0% {
+    transform: translate(0, 0) scale(1);
+  }
+  33% {
+    transform: translate(40px, 30px) scale(1.08);
+  }
+  66% {
+    transform: translate(-30px, 20px) scale(0.96);
+  }
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+}
+
+/* ---------- Layout ---------- */
+
+.container {
+  position: relative;
+  z-index: 1;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 20px 80px;
+}
+
+.header {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 24px 20px;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  font-size: 18px;
+  color: #f5f5f5;
+  letter-spacing: -0.2px;
+}
+
+.logo svg {
+  flex-shrink: 0;
+}
+
+/* ---------- Hero ---------- */
+
+.hero {
+  text-align: center;
+  padding: 64px 0 48px;
+}
+
+.hero-title {
+  font-size: 44px;
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -1px;
+  margin: 0 auto 20px;
+  max-width: 620px;
+  background: linear-gradient(90deg, #0052ff, #8b5cf6, #0052ff);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: gradientFlow 8s linear infinite;
+}
+
+@keyframes gradientFlow {
+  to {
+    background-position: 200% center;
+  }
+}
+
+.hero-sub {
+  font-size: 17px;
+  color: #9ca3af;
+  max-width: 520px;
+  margin: 0 auto;
+  line-height: 1.5;
+}
+
+/* ---------- Cards ---------- */
+
+.card {
+  background: #111113;
+  border: 1px solid #1f1f23;
+  border-radius: 16px;
+  padding: 24px;
+  margin-bottom: 24px;
+}
+
+.scanner-card label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #9ca3af;
+  margin-bottom: 10px;
+}
+
+.scanner-row {
+  display: flex;
+  gap: 10px;
+}
+
+.scanner-row input {
+  flex: 1;
+  background: #0a0a0a;
+  border: 1px solid #2a2a2e;
+  border-radius: 10px;
+  padding: 13px 14px;
+  color: #f5f5f5;
+  font-size: 15px;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.scanner-row input:focus {
+  border-color: #0052ff;
+}
+
+.scanner-row input::placeholder {
+  color: #55565c;
+}
+
+.scan-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 150px;
+  background: #0052ff;
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 0 20px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.scan-button:hover:not(:disabled) {
+  background: #1a63ff;
+}
+
+.scan-button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.scan-button:disabled {
+  opacity: 0.75;
+  cursor: default;
+}
+
+.error-text {
+  color: #ef4444;
+  font-size: 13.5px;
+  margin-top: 12px;
+}
+
+.hint-text {
+  color: #6b7280;
+  font-size: 13px;
+  margin-top: 12px;
+}
+
+/* ---------- Spinner ---------- */
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+.loading-ring {
+  width: 64px;
+  height: 64px;
+  margin: 8px auto 18px;
+  border: 4px solid #1f1f23;
+  border-top-color: #0052ff;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- Result card ---------- */
+
+.result-card {
+  text-align: center;
+}
+
+.result-status-label {
+  color: #9ca3af;
+  font-size: 14.5px;
+  font-weight: 500;
+}
+
+.gauge-wrap {
+  position: relative;
+  width: 160px;
+  height: 160px;
+  margin: 4px auto 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gauge-wrap svg {
+  position: absolute;
+  inset: 0;
+}
+
+.gauge-number {
+  font-size: 38px;
+  font-weight: 800;
+  color: #f5f5f5;
+  font-variant-numeric: tabular-nums;
+}
+
+.badge {
+  display: inline-block;
+  padding: 5px 16px;
+  border-radius: 999px;
+  border: 1.5px solid;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+}
+
+.result-subject {
+  margin-top: 16px;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.result-subject a,
+.result-tx a {
+  color: #6b8cff;
+  text-decoration: none;
+}
+
+.result-subject a:hover,
+.result-tx a:hover {
+  text-decoration: underline;
+}
+
+.result-tx {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+/* ---------- Recent scans ---------- */
+
+.recent-scans h2 {
+  font-size: 15px;
+  font-weight: 700;
+  color: #f5f5f5;
+  margin-bottom: 16px;
+}
+
+.empty-text {
+  color: #6b7280;
+  font-size: 14px;
+}
+
+.scan-table {
+  display: flex;
+  flex-direction: column;
+}
+
+.scan-row {
+  display: grid;
+  grid-template-columns: 1fr 60px 76px 84px;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid #1c1c20;
+  font-size: 13.5px;
+}
+
+.scan-row:last-child {
+  border-bottom: none;
+}
+
+.scan-row-head {
+  color: #6b7280;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  border-bottom: 1px solid #1c1c20;
+}
+
+.scan-endpoint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #d1d5db;
+}
+
+.scan-score {
+  font-variant-numeric: tabular-nums;
+  color: #f5f5f5;
+  font-weight: 600;
+}
+
+.scan-time {
+  color: #6b7280;
+}
+
+.scan-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1.5px solid;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-align: center;
+  width: fit-content;
+}
+
+@media (max-width: 560px) {
+  .hero-title {
+    font-size: 32px;
+  }
+
+  .scanner-row {
+    flex-direction: column;
+  }
+
+  .scan-row {
+    grid-template-columns: 1fr 44px 64px;
+  }
+
+  .scan-row-head span:last-child,
+  .scan-row span:nth-child(4) {
+    display: none;
+  }
+}

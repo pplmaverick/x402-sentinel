@@ -11,11 +11,36 @@ const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 const REQUEST_TIMEOUT_MS = 6000
 
+// Pulls payTo out of an x402 challenge object, whether it came from the JSON
+// body or a decoded header (both use the same {payTo} / {accepts:[{payTo}]} shape).
+function payToFromChallenge(challenge) {
+  if (!challenge || typeof challenge !== 'object') return null
+  if (typeof challenge.payTo === 'string') return challenge.payTo
+  const accept = Array.isArray(challenge.accepts) ? challenge.accepts[0] : null
+  if (accept && typeof accept.payTo === 'string') return accept.payTo
+  return null
+}
+
+// Some x402 servers (e.g. PocketFactory) put the challenge in a
+// PAYMENT-REQUIRED / X-PAYMENT-REQUIRED header as base64-encoded JSON instead
+// of (or in addition to) the response body.
+function decodeHeaderChallenge(headers, headerName) {
+  const raw = headers.get(headerName)
+  if (!raw) return null
+  try {
+    return JSON.parse(Buffer.from(raw, 'base64').toString('utf-8'))
+  } catch {
+    return null
+  }
+}
+
 function extractPayTo(body, headers) {
-  if (body && typeof body === 'object') {
-    if (typeof body.payTo === 'string') return body.payTo
-    const accept = Array.isArray(body.accepts) ? body.accepts[0] : null
-    if (accept && typeof accept.payTo === 'string') return accept.payTo
+  const fromBody = payToFromChallenge(body)
+  if (fromBody) return fromBody
+
+  for (const headerName of ['payment-required', 'x-payment-required']) {
+    const fromHeader = payToFromChallenge(decodeHeaderChallenge(headers, headerName))
+    if (fromHeader) return fromHeader
   }
 
   const authHeader = headers.get('www-authenticate')

@@ -26,6 +26,29 @@ const STATUS_LABELS = {
 const BUSY_STATES = new Set(['resolving', 'approving', 'verifying', 'reading'])
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
+const HOW_IT_WORKS_STEPS = [
+  {
+    icon: '🔍',
+    title: 'Scan Any Endpoint',
+    body: 'Enter any x402 endpoint URL or payTo address. We resolve the payTo address from the live 402 response.',
+  },
+  {
+    icon: '⚡',
+    title: 'Verify On-Chain',
+    body: 'Pay $0.001 USDC to trigger an on-chain verification. The result is written to Base mainnet — immutable and composable.',
+  },
+  {
+    icon: '📊',
+    title: 'Get Trust Score',
+    body: 'Receive a 0–100 trust score based on endpoint health, 402 compliance, and oracle signals.',
+  },
+  {
+    icon: '🛡️',
+    title: 'Defend Your Agent',
+    body: 'PASS / WARN / BLOCK — know before your agent pays. Any x402 service can query Sentinel on-chain, no API key needed.',
+  },
+]
+
 function getVerdict(score) {
   if (score >= 70) return { label: 'PASS', color: '#22c55e' }
   if (score >= 40) return { label: 'WARN', color: '#eab308' }
@@ -335,6 +358,32 @@ export default function App() {
             </motion.section>
           )}
         </AnimatePresence>
+
+        <motion.section
+          className="how-it-works"
+          initial={{ opacity: 0, y: 24 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true, amount: 0.2 }}
+          transition={{ duration: 0.6, ease: 'easeOut' }}
+        >
+          <div className="how-it-works-inner">
+            <h2 className="how-it-works-title">How It Works</h2>
+            <div className="steps-grid">
+              {HOW_IT_WORKS_STEPS.map((step) => (
+                <div className="step-card" key={step.title}>
+                  <span className="step-icon" aria-hidden="true">
+                    {step.icon}
+                  </span>
+                  <h3 className="step-title">{step.title}</h3>
+                  <p className="step-body">{step.body}</p>
+                </div>
+              ))}
+            </div>
+            <p className="how-it-works-footnote">
+              Defending against Attack IV (Server-Selection) identified in arXiv:2605.11781
+            </p>
+          </div>
+        </motion.section>
 
         <section className="card recent-scans">
           <h2>Recent Scans</h2>

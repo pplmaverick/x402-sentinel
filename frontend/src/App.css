@@ -326,6 +326,79 @@
   color: #6b7280;
 }
 
+/* ---------- How it works ---------- */
+
+.how-it-works {
+  width: 100vw;
+  margin-left: calc(50% - 50vw);
+  margin-right: calc(50% - 50vw);
+  margin-top: 8px;
+  margin-bottom: 24px;
+  background: #111111;
+  padding: 56px 20px 64px;
+}
+
+.how-it-works-inner {
+  max-width: 1040px;
+  margin: 0 auto;
+}
+
+.how-it-works-title {
+  text-align: center;
+  font-size: 26px;
+  font-weight: 800;
+  color: #f5f5f5;
+  margin: 0 0 40px;
+  letter-spacing: -0.4px;
+}
+
+.steps-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 28px;
+}
+
+.step-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+
+.step-icon {
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.step-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #f5f5f5;
+  margin: 0;
+}
+
+.step-body {
+  font-size: 13.5px;
+  color: #9ca3af;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.how-it-works-footnote {
+  margin-top: 48px;
+  text-align: center;
+  font-size: 12.5px;
+  color: #6b7280;
+}
+
+@media (max-width: 768px) {
+  .steps-grid {
+    grid-template-columns: 1fr;
+    gap: 32px;
+  }
+}
+
 /* ---------- Recent scans ---------- */
 
 .recent-scans h2 {

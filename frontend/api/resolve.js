@@ -8,6 +8,7 @@
 // arbitrary third-party APIs.
 
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 const REQUEST_TIMEOUT_MS = 6000
 
 function extractPayTo(body, headers) {
@@ -67,13 +68,19 @@ export default async function handler(req, res) {
   }
 
   const payTo = extractPayTo(body, response.headers)
+  const isZeroAddress = typeof payTo === 'string' && payTo.toLowerCase() === ZERO_ADDRESS
 
-  if (!payTo || !ADDRESS_RE.test(payTo)) {
+  if (!payTo || !ADDRESS_RE.test(payTo) || isZeroAddress) {
     res.status(200).json({
       url,
       status,
       subject: null,
-      error: status === 402 ? 'endpoint returned 402 but no valid payTo address was found' : 'endpoint did not return an x402 402 challenge',
+      error:
+        status === 402
+          ? isZeroAddress
+            ? 'endpoint returned the zero address as payTo — skipping'
+            : 'endpoint returned 402 but no valid payTo address was found'
+          : 'endpoint did not return an x402 402 challenge',
     })
     return
   }

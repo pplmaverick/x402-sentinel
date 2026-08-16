@@ -24,6 +24,7 @@ const STATUS_LABELS = {
 }
 
 const BUSY_STATES = new Set(['resolving', 'approving', 'verifying', 'reading'])
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
 function getVerdict(score) {
   if (score >= 70) return { label: 'PASS', color: '#22c55e' }
@@ -147,6 +148,9 @@ export default function App() {
 
       if (isAddress(raw)) {
         subject = getAddress(raw)
+        if (subject === ZERO_ADDRESS) {
+          throw new Error('The zero address cannot be scanned.')
+        }
       } else {
         setScanState('resolving')
         const target = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`

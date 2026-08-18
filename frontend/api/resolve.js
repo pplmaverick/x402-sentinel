@@ -14,11 +14,18 @@ const X402_LIST_BASE = 'https://x402-list.com/api/v1'
 
 // Pulls payTo out of an x402 challenge object, whether it came from the JSON
 // body or a decoded header (both use the same {payTo} / {accepts:[{payTo}]} shape).
+// accepts[] can list multiple networks (e.g. Solana before Base) — scan all of
+// them for the first EVM-shaped payTo rather than assuming index 0 is ours.
 function payToFromChallenge(challenge) {
   if (!challenge || typeof challenge !== 'object') return null
-  if (typeof challenge.payTo === 'string') return challenge.payTo
-  const accept = Array.isArray(challenge.accepts) ? challenge.accepts[0] : null
-  if (accept && typeof accept.payTo === 'string') return accept.payTo
+  if (typeof challenge.payTo === 'string' && ADDRESS_RE.test(challenge.payTo)) return challenge.payTo
+  if (Array.isArray(challenge.accepts)) {
+    for (const accept of challenge.accepts) {
+      if (accept && typeof accept.payTo === 'string' && ADDRESS_RE.test(accept.payTo)) {
+        return accept.payTo
+      }
+    }
+  }
   return null
 }
 

@@ -10,6 +10,7 @@
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 const REQUEST_TIMEOUT_MS = 6000
+const X402_LIST_BASE = 'https://x402-list.com/api/v1'
 
 // Pulls payTo out of an x402 challenge object, whether it came from the JSON
 // body or a decoded header (both use the same {payTo} / {accepts:[{payTo}]} shape).
@@ -52,6 +53,103 @@ function extractPayTo(body, headers) {
   return null
 }
 
+function isUsablePayTo(payTo) {
+  return typeof payTo === 'string' && ADDRESS_RE.test(payTo) && payTo.toLowerCase() !== ZERO_ADDRESS
+}
+
+async function fetchWithTimeout(url, options) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  try {
+    return await fetch(url, { ...options, signal: controller.signal })
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+// Requests `url` with `method` and extracts a payTo from whatever comes back.
+// Never throws — connection failures just surface as a null payTo.
+async function probe(url, method) {
+  let response
+  try {
+    response = await fetchWithTimeout(url, { method })
+  } catch (err) {
+    return { status: null, payTo: null, error: `connection failed: ${err.message}` }
+  }
+
+  const status = response.status
+  let body = null
+  try {
+    body = await response.clone().json()
+  } catch {
+    // Non-JSON body is fine — we still check the WWW-Authenticate header below.
+  }
+
+  return { status, payTo: extractPayTo(body, response.headers), error: null }
+}
+
+// Base URLs (e.g. https://stable-deepline.dev) commonly 402 only on a specific
+// POST route, not on GET /. When direct probing finds nothing, look the host up
+// in the x402-list.com directory and probe the first endpoint route it lists.
+async function resolveViaX402List(parsed) {
+  const domain = parsed.hostname
+
+  let searchRes
+  try {
+    searchRes = await fetchWithTimeout(`${X402_LIST_BASE}/services?q=${encodeURIComponent(domain)}`)
+  } catch {
+    return null
+  }
+  if (!searchRes.ok) return null
+
+  let searchBody
+  try {
+    searchBody = await searchRes.json()
+  } catch {
+    return null
+  }
+
+  // ?q= is a general text search (name/description match too), so confirm the
+  // hit's own base_url hostname actually matches before trusting its endpoints.
+  const services = Array.isArray(searchBody?.data) ? searchBody.data : []
+  const match = services.find((svc) => {
+    try {
+      return new URL(svc.base_url).hostname === domain
+    } catch {
+      return false
+    }
+  })
+  if (!match?.slug) return null
+
+  let detailRes
+  try {
+    detailRes = await fetchWithTimeout(`${X402_LIST_BASE}/services/${encodeURIComponent(match.slug)}`)
+  } catch {
+    return null
+  }
+  if (!detailRes.ok) return null
+
+  let detailBody
+  try {
+    detailBody = await detailRes.json()
+  } catch {
+    return null
+  }
+
+  const endpoints = Array.isArray(detailBody?.data?.endpoints) ? detailBody.data.endpoints : []
+  const endpoint = endpoints.find((e) => e.is_active) || endpoints[0]
+  if (!endpoint?.path) return null
+
+  let target
+  try {
+    target = new URL(endpoint.path, match.base_url).toString()
+  } catch {
+    return null
+  }
+
+  return probe(target, (endpoint.method || 'POST').toUpperCase())
+}
+
 export default async function handler(req, res) {
   const url = req.query?.url
 
@@ -71,44 +169,35 @@ export default async function handler(req, res) {
     return
   }
 
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  const target = parsed.toString()
 
-  let response
-  try {
-    response = await fetch(parsed.toString(), { signal: controller.signal })
-  } catch (err) {
-    clearTimeout(timeout)
-    res.status(200).json({ url, status: null, subject: null, error: `connection failed: ${err.message}` })
-    return
+  let result = await probe(target, 'GET')
+  if (!isUsablePayTo(result.payTo)) {
+    result = await probe(target, 'POST')
   }
-  clearTimeout(timeout)
-
-  const status = response.status
-  let body = null
-  try {
-    body = await response.clone().json()
-  } catch {
-    // Non-JSON body is fine — we still check the WWW-Authenticate header below.
+  if (!isUsablePayTo(result.payTo)) {
+    const viaList = await resolveViaX402List(parsed)
+    if (viaList && isUsablePayTo(viaList.payTo)) {
+      result = viaList
+    }
   }
 
-  const payTo = extractPayTo(body, response.headers)
-  const isZeroAddress = typeof payTo === 'string' && payTo.toLowerCase() === ZERO_ADDRESS
+  const isZeroAddress = typeof result.payTo === 'string' && result.payTo.toLowerCase() === ZERO_ADDRESS
 
-  if (!payTo || !ADDRESS_RE.test(payTo) || isZeroAddress) {
+  if (!isUsablePayTo(result.payTo)) {
     res.status(200).json({
       url,
-      status,
+      status: result.status,
       subject: null,
       error:
-        status === 402
+        result.status === 402
           ? isZeroAddress
             ? 'endpoint returned the zero address as payTo — skipping'
             : 'endpoint returned 402 but no valid payTo address was found'
-          : 'endpoint did not return an x402 402 challenge',
+          : 'endpoint did not return an x402 402 challenge (GET/POST) and no known endpoint was found via x402-list.com',
     })
     return
   }
 
-  res.status(200).json({ url, status, subject: payTo, error: null })
+  res.status(200).json({ url, status: result.status, subject: result.payTo, error: null })
 }

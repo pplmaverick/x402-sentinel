@@ -21,7 +21,6 @@ https://x402-sentinel.vercel.app/
 | Chain ID | 8453 |
 | SentinelRegistry | [`0x072A3A0C04Cf8CDcaf5B4A73a4Ed4fF5A841531f`](https://basescan.org/address/0x072A3A0C04Cf8CDcaf5B4A73a4Ed4fF5A841531f) (verified) |
 | SentinelPayment | [`0xcAC5B9d2817325E78090E3Ce4b9C299C819cF953`](https://basescan.org/address/0xcAC5B9d2817325E78090E3Ce4b9C299C819cF953) (verified) |
-| Frontend | [x402-sentinel.vercel.app](https://x402-sentinel.vercel.app) |
 
 ---
 

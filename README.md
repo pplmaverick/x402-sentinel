@@ -1,10 +1,17 @@
 # x402 Sentinel
 
+[![CI](https://github.com/pplmaverick/x402-sentinel/actions/workflows/test.yml/badge.svg)](https://github.com/pplmaverick/x402-sentinel/actions/workflows/test.yml)
 ![Network](https://img.shields.io/badge/Base_Mainnet-8453-blue)
 ![Solidity](https://img.shields.io/badge/Solidity-0.8.28-purple)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 The first on-chain trust scoring layer defending against x402 Attack IV (Server-Selection Attacks) — [arXiv:2605.11781](https://arxiv.org/abs/2605.11781). Purpose-built for Base: trust scores live on-chain so any contract or agent can query them directly, with no API key and no off-chain trust broker in the loop.
+
+## 🌐 Live Demo
+
+https://x402-sentinel.vercel.app/
+
+---
 
 **Deployed on Base Mainnet**
 

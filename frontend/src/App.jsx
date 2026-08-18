@@ -205,6 +205,11 @@ export default function App() {
           chainId: base.id,
         })
         await waitForTransactionReceipt(config, { hash: approveHash, chainId: base.id })
+
+        // The wallet's own RPC node may not have caught up to the just-confirmed
+        // approve yet, so its pre-flight gas estimation for payAndVerify can see a
+        // stale (zero) allowance and block the tx as "will revert". Give it a beat.
+        await new Promise((resolve) => setTimeout(resolve, 2000))
       }
 
       setScanState('verifying')

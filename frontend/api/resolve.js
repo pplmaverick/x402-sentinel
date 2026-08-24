@@ -147,9 +147,17 @@ async function resolveViaX402List(parsed) {
   const endpoint = endpoints.find((e) => e.is_active) || endpoints[0]
   if (!endpoint?.path) return null
 
+  // endpoint.path (e.g. "/onchain/networks/{id}/trending_pools") is a suffix to
+  // append to base_url's own path, not a path relative to the origin — base_url
+  // routes commonly have their own prefix (e.g. "/api/v3/x402"), and resolving
+  // via `new URL(path, base_url)` silently drops that prefix whenever path
+  // starts with "/" (standard relative-URL resolution treats a leading "/" as
+  // origin-relative), landing on the wrong route entirely.
   let target
   try {
-    target = new URL(endpoint.path, match.base_url).toString()
+    const basePath = match.base_url.replace(/\/+$/, '')
+    const suffix = endpoint.path.startsWith('/') ? endpoint.path : `/${endpoint.path}`
+    target = new URL(basePath + suffix).toString()
   } catch {
     return null
   }

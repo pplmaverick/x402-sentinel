@@ -113,12 +113,28 @@ async function pruneLabels(keepIds) {
   if (stale.length) await redis.hdel(LABELS_KEY, ...stale)
 }
 
+// The frontend posts the label right after its own RPC confirms the tx, but
+// our RPC (mainnet.base.org) can lag a beat behind — getTransactionReceipt
+// throws "not found" until it catches up, not because the tx is invalid.
+// Same class of propagation race as the approve->payAndVerify delay above;
+// retry a few times before concluding it really doesn't exist.
+async function getReceiptWithRetry(txHash, attempts = 5, delayMs = 1500) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await client.getTransactionReceipt({ hash: txHash })
+    } catch (err) {
+      if (i === attempts - 1) throw err
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+    }
+  }
+}
+
 // Confirms `txHash` is a mined call into SentinelPayment that produced a
 // Verified event matching `receiptId`, so the label can be trusted.
 async function verifyReceiptTx(txHash, receiptId) {
   let receipt
   try {
-    receipt = await client.getTransactionReceipt({ hash: txHash })
+    receipt = await getReceiptWithRetry(txHash)
   } catch {
     return false
   }

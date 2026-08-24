@@ -420,7 +420,7 @@
 
 .scan-row {
   display: grid;
-  grid-template-columns: 1fr 60px 76px 84px;
+  grid-template-columns: 1fr 112px 50px 76px 84px;
   gap: 12px;
   align-items: center;
   padding: 12px 0;
@@ -446,6 +446,22 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: #d1d5db;
+}
+
+.scan-subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.scan-subject a {
+  color: #6b8cff;
+  text-decoration: none;
+}
+
+.scan-subject a:hover {
+  text-decoration: underline;
 }
 
 .scan-score {
@@ -483,8 +499,8 @@
     grid-template-columns: 1fr 44px 64px;
   }
 
-  .scan-row-head span:last-child,
-  .scan-row span:nth-child(4) {
+  .scan-row span:nth-child(2),
+  .scan-row span:last-child {
     display: none;
   }
 }

@@ -159,7 +159,7 @@ export default function App() {
           const verdict = getVerdict(s.score)
           return {
             id: s.receiptId,
-            endpoint: s.endpointLabel || s.subject,
+            endpoint: s.endpointLabel || null,
             subject: s.subject,
             score: s.score,
             label: verdict.label,
@@ -456,6 +456,7 @@ export default function App() {
             <div className="scan-table">
               <div className="scan-row scan-row-head">
                 <span>Endpoint</span>
+                <span>PayTo</span>
                 <span>Score</span>
                 <span>Status</span>
                 <span>Time</span>
@@ -471,8 +472,17 @@ export default function App() {
                     exit={{ opacity: 0 }}
                     transition={{ duration: 0.35, ease: 'easeOut' }}
                   >
-                    <span className="scan-endpoint" title={item.endpoint}>
-                      {item.endpoint}
+                    <span className="scan-endpoint" title={item.endpoint || ''}>
+                      {item.endpoint || '—'}
+                    </span>
+                    <span className="scan-subject">
+                      <a
+                        href={`https://basescan.org/address/${item.subject}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {item.subject.slice(0, 6)}...{item.subject.slice(-4)}
+                      </a>
                     </span>
                     <span className="scan-score">{item.score}</span>
                     <span

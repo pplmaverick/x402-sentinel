@@ -105,11 +105,21 @@ async function fetchReceipts(ids) {
   })
 }
 
-// Drops any stored label whose receiptId has aged out of the display window.
-async function pruneLabels(keepIds) {
+// Drops stored labels that have aged out of the display window, anchored on
+// `newId` — a receiptId already proven real by verifyReceiptTx — rather than
+// a fresh receiptCount() read. mainnet.base.org load-balances across backend
+// nodes with inconsistent sync state, so a second live read here could land
+// on a lagging node, compute a stale (smaller) window, and delete the label
+// this same request just wrote before ever returning to the caller.
+async function pruneLabels(newId) {
   const fields = await redis.hkeys(LABELS_KEY)
-  const keep = new Set(keepIds)
-  const stale = fields.filter((f) => !keep.has(f))
+  if (!fields.length) return
+
+  const ids = fields.map((f) => BigInt(f))
+  const maxId = ids.reduce((m, n) => (n > m ? n : m), newId)
+  const cutoff = maxId - BigInt(DISPLAY_LIMIT) + 1n
+
+  const stale = fields.filter((f) => BigInt(f) < cutoff)
   if (stale.length) await redis.hdel(LABELS_KEY, ...stale)
 }
 
@@ -207,8 +217,7 @@ async function handlePost(req, res) {
   }
 
   try {
-    const keepIds = await latestReceiptIds()
-    await pruneLabels(keepIds.map((i) => i.toString()))
+    await pruneLabels(id)
   } catch {
     // Pruning is best-effort; a slightly oversized label hash is harmless.
   }

@@ -4,7 +4,7 @@ import { useAccount, useConfig } from 'wagmi'
 import { readContract, waitForTransactionReceipt, writeContract } from 'wagmi/actions'
 import { base } from 'wagmi/chains'
 import { ConnectKitButton, useModal } from 'connectkit'
-import { getAddress, isAddress } from 'viem'
+import { decodeEventLog, getAddress, isAddress } from 'viem'
 import {
   ERC20_ABI,
   SENTINEL_PAYMENT_ABI,
@@ -147,6 +147,38 @@ export default function App() {
 
   const isBusy = BUSY_STATES.has(scanState)
 
+  async function loadRecentScans() {
+    try {
+      const res = await fetch('/api/scans')
+      if (!res.ok) return
+      const data = await res.json()
+      if (!Array.isArray(data.scans)) return
+
+      setHistory(
+        data.scans.map((s) => {
+          const verdict = getVerdict(s.score)
+          return {
+            id: s.receiptId,
+            endpoint: s.endpointLabel || s.subject,
+            subject: s.subject,
+            score: s.score,
+            label: verdict.label,
+            color: verdict.color,
+            time: new Date(s.timestamp * 1000).toLocaleTimeString('en-US'),
+          }
+        })
+      )
+    } catch {
+      // Best-effort — leave whatever is currently shown.
+    }
+  }
+
+  useEffect(() => {
+    loadRecentScans()
+    const interval = setInterval(loadRecentScans, 30_000)
+    return () => clearInterval(interval)
+  }, [])
+
   async function handleScan() {
     if (isBusy) return
 
@@ -220,7 +252,21 @@ export default function App() {
         args: [subject],
         chainId: base.id,
       })
-      await waitForTransactionReceipt(config, { hash: payHash, chainId: base.id })
+      const receipt = await waitForTransactionReceipt(config, { hash: payHash, chainId: base.id })
+
+      let receiptId = null
+      for (const log of receipt.logs) {
+        if (log.address.toLowerCase() !== SENTINEL_REGISTRY_ADDRESS.toLowerCase()) continue
+        try {
+          const decoded = decodeEventLog({ abi: SENTINEL_REGISTRY_ABI, data: log.data, topics: log.topics })
+          if (decoded.eventName === 'Verified') {
+            receiptId = decoded.args.receiptId
+            break
+          }
+        } catch {
+          // Not the log we're looking for.
+        }
+      }
 
       setScanState('reading')
       const scoreRaw = await readContract(config, {
@@ -246,8 +292,20 @@ export default function App() {
       }
 
       setCurrentResult(result)
-      setHistory((prev) => [result, ...prev].slice(0, 25))
       setScanState('done')
+
+      if (receiptId !== null && !isAddress(raw)) {
+        try {
+          await fetch('/api/scans', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ txHash: payHash, receiptId: receiptId.toString(), endpointLabel }),
+          })
+        } catch {
+          // Best-effort — the scan still shows up, just without a URL label.
+        }
+      }
+      loadRecentScans()
     } catch (err) {
       console.error(err)
       setErrorMessage(err.shortMessage || err.message || 'Scan failed.')

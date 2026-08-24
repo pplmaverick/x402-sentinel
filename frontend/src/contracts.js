@@ -53,4 +53,15 @@ export const SENTINEL_REGISTRY_ABI = [
     inputs: [{ name: 'subject', type: 'address' }],
     outputs: [{ type: 'bool' }],
   },
+  {
+    type: 'event',
+    name: 'Verified',
+    inputs: [
+      { name: 'subject', type: 'address', indexed: true },
+      { name: 'reporter', type: 'address', indexed: true },
+      { name: 'passed', type: 'bool', indexed: false },
+      { name: 'trustScore', type: 'uint256', indexed: false },
+      { name: 'receiptId', type: 'uint256', indexed: false },
+    ],
+  },
 ]

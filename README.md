@@ -60,6 +60,25 @@ User → Frontend (React+Wagmi)
 ### On-Chain Trust Scores
 Scores are written to `SentinelRegistry` on Base, not held behind an API. Any contract — or any agent's payment logic — can call `getTrustScore(address)` directly, no key, no off-chain round trip.
 
+### How Trust Scores Are Calculated
+
+Trust scores are not a one-time pass/fail snapshot — they reflect an
+endpoint's reliability across its recent verification history. Each
+subject address tracked by the oracle keeps a rolling window of its
+last 20 checks. The score is computed with Laplace smoothing:
+
+```
+score = round((passes + 1) / (total + 2) * 100)
+```
+
+This means a single successful check produces a moderate score (~67),
+not an immediate 100 — the score converges toward the endpoint's true
+reliability as more evidence accumulates, and degrades if a
+previously-reliable endpoint starts failing checks. Addresses that
+have never exposed a payTo address in an x402 challenge remain at the
+registry's default score until the oracle successfully resolves one,
+since SentinelRegistry maps trust scores to addresses, not URLs.
+
 ### Automatic Endpoint Discovery
 `/api/resolve` runs a three-stage fallback: GET the given URL, then POST it, then look the host up in the x402-list.com directory and probe its first known route. Covers base URLs whose 402 only fires on a specific POST endpoint.
 

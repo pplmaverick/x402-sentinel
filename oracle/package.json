@@ -8,6 +8,7 @@
     "start": "node reporter.js"
   },
   "dependencies": {
+    "@upstash/redis": "^1.38.2",
     "axios": "^1.7.9",
     "dotenv": "^17.4.2",
     "ethers": "^6.17.0"

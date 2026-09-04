@@ -3,6 +3,7 @@ import { fileURLToPath } from 'url';
 import axios from 'axios';
 import { ethers } from 'ethers';
 import dotenv from 'dotenv';
+import { Redis } from '@upstash/redis';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -12,6 +13,15 @@ const REGISTRY_ABI = ['function updateTrustScore(address subject, uint256 newSco
 
 const INTERVAL_MS = 10 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 5000;
+
+// Same Redis instance frontend/api/scans.js writes to (Redis.fromEnv() reads
+// UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN). Reliability tracking below
+// keys off this so the oracle and the frontend agree on which address a URL maps to.
+const redis = Redis.fromEnv();
+
+const WINDOW_SIZE = 20; // rolling checks kept per subject
+const ENDPOINT_SUBJECT_PREFIX = 'x402-sentinel:endpoint-subject:';
+const RELIABILITY_HISTORY_PREFIX = 'x402-sentinel:reliability-history:';
 
 const X402_LIST_BASE = 'https://x402-list.com/api/v1';
 const DISCOVERY_TIMEOUT_MS = 8000;
@@ -202,15 +212,87 @@ async function fetchActiveEndpoints() {
   return results;
 }
 
+// Every url this oracle has ever resolved a payTo for, regardless of whether
+// x402-list.com is still surfacing it this cycle — so a service that briefly
+// drops out of the directory's "online" list still keeps getting checked (and
+// can keep failing checks) instead of silently freezing at its last score.
+async function loadTrackedEndpoints() {
+  let keys;
+  try {
+    keys = await redis.keys(`${ENDPOINT_SUBJECT_PREFIX}*`);
+  } catch (err) {
+    console.log(`Redis lookup for tracked endpoints failed: ${err.message}`);
+    return [];
+  }
+  if (!keys.length) return [];
+
+  const subjects = await Promise.all(keys.map((key) => redis.get(key)));
+  return keys
+    .map((key, i) => ({ url: key.slice(ENDPOINT_SUBJECT_PREFIX.length), subject: subjects[i] }))
+    .filter((e) => e.subject);
+}
+
+// Records this check's pass/fail into subject's rolling window and returns the
+// Laplace-smoothed reliability score. Formula fixed for Independent Reference
+// Model Testing parity: score = round((passes + 1) / (total + 2) * 100).
+async function recordResult(subject, passed) {
+  const key = `${RELIABILITY_HISTORY_PREFIX}${subject}`;
+  await redis.lpush(key, passed ? '1' : '0');
+  await redis.ltrim(key, 0, WINDOW_SIZE - 1);
+
+  const history = await redis.lrange(key, 0, -1);
+  const total = history.length;
+  const passes = history.filter((v) => v === '1').length;
+
+  return Math.round(((passes + 1) / (total + 2)) * 100);
+}
+
 async function runCycle(registry) {
   console.log(`\n=== scan cycle ${new Date().toISOString()} ===`);
-  const endpoints = await fetchActiveEndpoints();
 
-  for (const candidate of endpoints) {
-    const { url, score, status, subject } = await checkEndpoint(candidate);
-    console.log(`[${url}] status=${status ?? 'n/a'} score=${score} subject=${subject ?? 'none'}`);
+  const discovered = await fetchActiveEndpoints();
+  const tracked = await loadTrackedEndpoints();
 
-    if (!subject) continue;
+  // Merge by url, deduped. Freshly-discovered candidates keep their declared
+  // method; url-only-known-from-Redis candidates fall back to checkEndpoint's
+  // own GET-then-POST default since we don't persist method.
+  const merged = new Map();
+  for (const c of discovered) merged.set(c.url, { url: c.url, method: c.method });
+  for (const t of tracked) {
+    if (!merged.has(t.url)) merged.set(t.url, { url: t.url, method: undefined });
+  }
+
+  for (const candidate of merged.values()) {
+    const { url, status, subject: resolvedSubject } = await checkEndpoint(candidate);
+
+    let subject = resolvedSubject;
+    let passed;
+
+    if (subject) {
+      // This check resolved a non-zero payTo — a pass, and the address this
+      // url should be tracked under from now on.
+      passed = true;
+      const subjectKey = `${ENDPOINT_SUBJECT_PREFIX}${url}`;
+      const stored = await redis.get(subjectKey);
+      if (stored !== subject) {
+        await redis.set(subjectKey, subject);
+        if (stored) {
+          console.log(`[${url}] payTo changed from ${stored} to ${subject} — tracking under the new address`);
+        }
+      }
+    } else {
+      // No payTo this round. Only counts as a failure if we already know an
+      // address for this url; otherwise there's nothing to attribute it to.
+      passed = false;
+      subject = await redis.get(`${ENDPOINT_SUBJECT_PREFIX}${url}`);
+      if (!subject) {
+        console.log(`[${url}] status=${status ?? 'n/a'} no known subject yet — skipping`);
+        continue;
+      }
+    }
+
+    const score = await recordResult(subject, passed);
+    console.log(`[${url}] status=${status ?? 'n/a'} passed=${passed} subject=${subject} reliability_score=${score}`);
 
     try {
       const tx = await registry.updateTrustScore(subject, score);

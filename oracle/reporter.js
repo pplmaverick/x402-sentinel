@@ -242,7 +242,10 @@ async function recordResult(subject, passed) {
 
   const history = await redis.lrange(key, 0, -1);
   const total = history.length;
-  const passes = history.filter((v) => v === '1').length;
+  // @upstash/redis auto-deserializes list values, turning the "1"/"0" strings
+  // we pushed into JS numbers on read — compare numerically, not by strict
+  // string equality, so this isn't silently 0 against real Redis.
+  const passes = history.filter((v) => Number(v) === 1).length;
 
   return Math.round(((passes + 1) / (total + 2)) * 100);
 }

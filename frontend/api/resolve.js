@@ -7,10 +7,25 @@
 // extractPayTo), avoiding the CORS failures a browser-side fetch would hit against
 // arbitrary third-party APIs.
 
+import { Redis } from '@upstash/redis'
+
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 const REQUEST_TIMEOUT_MS = 6000
 const X402_LIST_BASE = 'https://x402-list.com/api/v1'
+
+// Same Redis instance oracle/reporter.js and frontend/api/scans.js use.
+const redis = Redis.fromEnv()
+const ENDPOINT_SUBJECT_PREFIX = 'x402-sentinel:endpoint-subject:'
+
+// Both booleans an address must satisfy to be usable as a SentinelRegistry
+// subject — split out so callers can see which one failed, not just a single
+// pass/fail bit.
+function structuralChecksFor(payTo) {
+  const validFormat = typeof payTo === 'string' && ADDRESS_RE.test(payTo)
+  const nonZeroAddress = validFormat && payTo.toLowerCase() !== ZERO_ADDRESS
+  return { validFormat, nonZeroAddress }
+}
 
 // Pulls payTo out of an x402 challenge object, whether it came from the JSON
 // body or a decoded header (both use the same {payTo} / {accepts:[{payTo}]} shape).
@@ -197,22 +212,42 @@ export default async function handler(req, res) {
     }
   }
 
-  const isZeroAddress = typeof result.payTo === 'string' && result.payTo.toLowerCase() === ZERO_ADDRESS
+  const checks = structuralChecksFor(result.payTo)
+  const passed = checks.validFormat && checks.nonZeroAddress
 
-  if (!isUsablePayTo(result.payTo)) {
+  if (!passed) {
+    const reason =
+      result.status === 402
+        ? checks.validFormat
+          ? 'endpoint returned the zero address as payTo — skipping'
+          : 'endpoint returned 402 but no valid payTo address was found'
+        : 'endpoint did not return an x402 402 challenge (GET/POST) and no known endpoint was found via x402-list.com'
+
     res.status(200).json({
       url,
       status: result.status,
       subject: null,
-      error:
-        result.status === 402
-          ? isZeroAddress
-            ? 'endpoint returned the zero address as payTo — skipping'
-            : 'endpoint returned 402 but no valid payTo address was found'
-          : 'endpoint did not return an x402 402 challenge (GET/POST) and no known endpoint was found via x402-list.com',
+      structuralCheck: { passed: false, checks, reason },
+      error: reason,
     })
     return
   }
 
-  res.status(200).json({ url, status: result.status, subject: result.payTo, error: null })
+  // Feed the resolved mapping to the oracle's tracking list (same Redis key
+  // oracle/reporter.js reads/writes). Overwrites unconditionally so a payTo
+  // change is picked up — scoring itself still only happens on the oracle's
+  // own schedule, this just tells it which subject to track this url under.
+  try {
+    await redis.set(`${ENDPOINT_SUBJECT_PREFIX}${url}`, result.payTo)
+  } catch (err) {
+    console.error('Failed to record endpoint-subject feedback:', err)
+  }
+
+  res.status(200).json({
+    url,
+    status: result.status,
+    subject: result.payTo,
+    structuralCheck: { passed: true, checks },
+    error: null,
+  })
 }

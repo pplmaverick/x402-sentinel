@@ -55,6 +55,30 @@ function getVerdict(score) {
   return { label: 'BLOCK', color: '#ef4444' }
 }
 
+const RISK_LABEL_COLORS = {
+  PASS: '#22c55e',
+  WARN: '#eab308',
+  BLOCK: '#ef4444',
+  UNKNOWN: '#8b8b93',
+}
+
+function colorForRiskLabel(riskLabel) {
+  return RISK_LABEL_COLORS[riskLabel] || RISK_LABEL_COLORS.UNKNOWN
+}
+
+// Text shown next to a Recent Scans score, explaining how much monitoring
+// evidence actually backs it (the score itself is a rolling reliability
+// figure computed by the oracle, not a one-time snapshot).
+function confidenceText(confidence, sampleSize) {
+  if (confidence === 'low') {
+    return `Low confidence — based on only ${sampleSize} check${sampleSize === 1 ? '' : 's'}`
+  }
+  if (confidence === 'normal') {
+    return `Based on ${sampleSize} monitored checks`
+  }
+  return 'Not yet monitored — showing registry default'
+}
+
 function useCountUp(target, durationMs) {
   const [value, setValue] = useState(0)
 
@@ -156,14 +180,20 @@ export default function App() {
 
       setHistory(
         data.scans.map((s) => {
-          const verdict = getVerdict(s.score)
+          // riskLabel/reliability come from the backend (isBlacklisted + rolling
+          // reliability history); fall back to a score-only verdict for any
+          // scan the API hasn't attached them to yet.
+          const riskLabel = s.riskLabel || getVerdict(s.score).label
+          const confidence = s.reliability?.confidence ?? 'none'
+          const sampleSize = s.reliability?.sampleSize ?? 0
           return {
             id: s.receiptId,
             endpoint: s.endpointLabel || null,
             subject: s.subject,
             score: s.score,
-            label: verdict.label,
-            color: verdict.color,
+            label: riskLabel,
+            color: colorForRiskLabel(riskLabel),
+            confidenceText: confidenceText(confidence, sampleSize),
             time: new Date(s.timestamp * 1000).toLocaleTimeString('en-US'),
           }
         })
@@ -484,7 +514,12 @@ export default function App() {
                         {item.subject.slice(0, 6)}...{item.subject.slice(-4)}
                       </a>
                     </span>
-                    <span className="scan-score">{item.score}</span>
+                    <span className="scan-score">
+                      {item.score}
+                      <small style={{ display: 'block', opacity: 0.6, fontWeight: 400 }}>
+                        {item.confidenceText}
+                      </small>
+                    </span>
                     <span
                       className="scan-badge"
                       style={{ color: item.color, borderColor: item.color }}

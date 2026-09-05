@@ -25,6 +25,7 @@ const DISPLAY_LIMIT = 25
 const MAX_LABEL_LENGTH = 200
 const LABELS_KEY = 'x402-sentinel:scan-labels'
 const TX_HASH_RE = /^0x[a-fA-F0-9]{64}$/
+const RELIABILITY_HISTORY_PREFIX = 'x402-sentinel:reliability-history:'
 
 const VERIFIED_EVENT = {
   type: 'event',
@@ -58,6 +59,13 @@ const REGISTRY_ABI = [
       { name: 'trustScoreAtVerification', type: 'uint256' },
       { name: 'timestamp', type: 'uint256' },
     ],
+  },
+  {
+    type: 'function',
+    name: 'isBlacklisted',
+    stateMutability: 'view',
+    inputs: [{ name: 'subject', type: 'address' }],
+    outputs: [{ type: 'bool' }],
   },
 ]
 
@@ -162,6 +170,62 @@ async function verifyReceiptTx(txHash, receiptId) {
   })
 }
 
+// none/low/normal confidence bands for the sample size backing a score.
+function confidenceFor(sampleSize) {
+  if (sampleSize === 0) return 'none'
+  if (sampleSize < 5) return 'low'
+  return 'normal'
+}
+
+// A receipt's subject is always structurally valid by construction — verify()
+// reverts on the zero address, so there is no "structuralCheck.passed: false"
+// case to fold in here the way there is in resolve.js's live-probe response.
+function riskLabelFor({ isBlacklisted, score, sampleSize }) {
+  if (isBlacklisted) return 'BLOCK'
+  if (sampleSize === 0) return 'UNKNOWN'
+  if (score >= 70) return 'PASS'
+  if (score >= 40) return 'WARN'
+  return 'BLOCK'
+}
+
+// Blacklist status (batched on-chain) and rolling-history sample size (Redis,
+// best-effort per subject) for each receipt, folded into a reliability summary
+// and a backend-computed riskLabel so the frontend doesn't re-derive either.
+async function fetchReliability(receipts) {
+  if (!receipts.length) return []
+  const subjects = receipts.map((r) => r.subject)
+
+  const blacklistFlags = await client.multicall({
+    contracts: subjects.map((subject) => ({
+      address: SENTINEL_REGISTRY_ADDRESS,
+      abi: REGISTRY_ABI,
+      functionName: 'isBlacklisted',
+      args: [subject],
+    })),
+    allowFailure: false,
+  })
+
+  const histories = await Promise.all(
+    subjects.map((subject) =>
+      redis.lrange(`${RELIABILITY_HISTORY_PREFIX}${subject}`, 0, -1).catch(() => [])
+    )
+  )
+
+  return receipts.map((r, i) => {
+    const sampleSize = histories[i].length
+    const isBlacklisted = blacklistFlags[i]
+    return {
+      reliability: {
+        score: r.score,
+        sampleSize,
+        confidence: confidenceFor(sampleSize),
+        tracked: sampleSize > 0,
+      },
+      riskLabel: riskLabelFor({ isBlacklisted, score: r.score, sampleSize }),
+    }
+  })
+}
+
 async function handleGet(res) {
   const ids = await latestReceiptIds()
   const receipts = await fetchReceipts(ids)
@@ -175,7 +239,14 @@ async function handleGet(res) {
     }
   }
 
-  const scans = receipts.map((r) => ({ ...r, endpointLabel: labels?.[r.receiptId] || null }))
+  const extras = await fetchReliability(receipts)
+
+  const scans = receipts.map((r, i) => ({
+    ...r,
+    endpointLabel: labels?.[r.receiptId] || null,
+    reliability: extras[i].reliability,
+    riskLabel: extras[i].riskLabel,
+  }))
   res.status(200).json({ scans })
 }
 

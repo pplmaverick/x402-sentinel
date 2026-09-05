@@ -11,7 +11,7 @@ dotenv.config({ path: path.join(__dirname, '.env') });
 const REGISTRY_ADDRESS = '0x072A3A0C04Cf8CDcaf5B4A73a4Ed4fF5A841531f';
 const REGISTRY_ABI = ['function updateTrustScore(address subject, uint256 newScore) external'];
 
-const INTERVAL_MS = 10 * 60 * 1000;
+const INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h — ~$0.000454/tx on Base, 30 tracked addrs/cycle keeps this ~$1/mo
 const REQUEST_TIMEOUT_MS = 5000;
 
 // Same Redis instance frontend/api/scans.js writes to (Redis.fromEnv() reads
@@ -22,6 +22,11 @@ const redis = Redis.fromEnv();
 const WINDOW_SIZE = 20; // rolling checks kept per subject
 const ENDPOINT_SUBJECT_PREFIX = 'x402-sentinel:endpoint-subject:';
 const RELIABILITY_HISTORY_PREFIX = 'x402-sentinel:reliability-history:';
+const SEEDED_FLAG_KEY = 'x402-sentinel:seeded';
+
+const MAX_TRACKED = 30; // total distinct subjects tracked (seed + discovery + website-scan feedback)
+const SEED_COUNT = 20; // one-time initial population, only when nothing is tracked yet
+const SEED_SCAN_LIMIT = 60; // listed services we're willing to look at (across pages) to find SEED_COUNT resolvable ones
 
 const X402_LIST_BASE = 'https://x402-list.com/api/v1';
 const DISCOVERY_TIMEOUT_MS = 8000;
@@ -161,6 +166,35 @@ async function checkEndpoint(candidate) {
   return { url, score: best.score, status: best.status, subject: best.subject };
 }
 
+// Resolves one x402-list.com service listing to a probeable {url, method}
+// candidate (base_url + its first active endpoint's path). Shared by regular
+// per-cycle discovery and the one-time seed below.
+async function resolveServiceEndpoint(svc) {
+  if (!svc.slug || typeof svc.base_url !== 'string') return null;
+
+  let detail;
+  try {
+    detail = await axios.get(`${X402_LIST_BASE}/services/${encodeURIComponent(svc.slug)}`, {
+      timeout: DISCOVERY_TIMEOUT_MS,
+    });
+  } catch {
+    return null;
+  }
+
+  const endpoints = Array.isArray(detail.data?.data?.endpoints) ? detail.data.data.endpoints : [];
+  const endpoint = endpoints.find((e) => e.is_active) || endpoints[0];
+  if (!endpoint?.path) return null;
+
+  try {
+    const basePath = svc.base_url.replace(/\/+$/, '');
+    const suffix = endpoint.path.startsWith('/') ? endpoint.path : `/${endpoint.path}`;
+    const url = new URL(basePath + suffix).toString();
+    return { url, method: (endpoint.method || 'GET').toUpperCase() };
+  } catch {
+    return null;
+  }
+}
+
 // Builds a candidate probe list from x402-list.com's live directory: online,
 // payment-ready services, resolved to one active endpoint path each (mirrors
 // frontend/api/resolve.js's resolveViaX402List). Falls back to a small
@@ -180,29 +214,8 @@ async function fetchActiveEndpoints() {
   const results = [];
   for (const svc of candidates.slice(0, DISCOVERY_SCAN_LIMIT)) {
     if (results.length >= DISCOVERY_TARGET) break;
-    if (!svc.slug || typeof svc.base_url !== 'string') continue;
-
-    let detail;
-    try {
-      detail = await axios.get(`${X402_LIST_BASE}/services/${encodeURIComponent(svc.slug)}`, {
-        timeout: DISCOVERY_TIMEOUT_MS,
-      });
-    } catch {
-      continue;
-    }
-
-    const endpoints = Array.isArray(detail.data?.data?.endpoints) ? detail.data.data.endpoints : [];
-    const endpoint = endpoints.find((e) => e.is_active) || endpoints[0];
-    if (!endpoint?.path) continue;
-
-    try {
-      const basePath = svc.base_url.replace(/\/+$/, '');
-      const suffix = endpoint.path.startsWith('/') ? endpoint.path : `/${endpoint.path}`;
-      const url = new URL(basePath + suffix).toString();
-      results.push({ url, method: (endpoint.method || 'GET').toUpperCase() });
-    } catch {
-      continue;
-    }
+    const resolved = await resolveServiceEndpoint(svc);
+    if (resolved) results.push(resolved);
   }
 
   if (results.length === 0) {
@@ -210,6 +223,122 @@ async function fetchActiveEndpoints() {
     return FALLBACK_ENDPOINTS;
   }
   return results;
+}
+
+// Real usage signal for ranking seed candidates: x402-list.com has no direct
+// "popularity"/"rank" field, but assessment.traction has actual settlement
+// counts (most services sit at 0; a handful — e.g. openzoo at 2629 all-time
+// tx — are clearly real traffic). All-time tx count first, then 30d tx count,
+// then all-time volume as tiebreakers.
+function popularityScore(svc) {
+  const t = svc?.assessment?.traction || {};
+  return (t.tx_count_all_time || 0) * 1_000_000 + (t.tx_count_30d || 0) * 1000 + (t.volume_usd_all_time || 0);
+}
+
+// Fetches candidates across a few pages of x402-list.com (the API ignores
+// ?limit and always pages at 25), ranked by real usage, and resolves them
+// through checkEndpoint() until SEED_COUNT actually yield a subject. Only
+// used once, when Redis has no tracked endpoints at all — see
+// seedTrackedEndpoints(). Endpoints that don't resolve are skipped, not
+// counted toward SEED_COUNT.
+async function fetchSeedCandidates() {
+  let services = [];
+  try {
+    for (let page = 1; page <= 3 && services.length < SEED_SCAN_LIMIT; page++) {
+      const res = await axios.get(`${X402_LIST_BASE}/services`, {
+        params: { page },
+        timeout: DISCOVERY_TIMEOUT_MS,
+      });
+      const batch = Array.isArray(res.data?.data) ? res.data.data : [];
+      if (!batch.length) break;
+      services.push(...batch);
+    }
+  } catch (err) {
+    console.log(`[seed] x402-list.com discovery failed: ${err.message}`);
+  }
+
+  const candidates = services.filter((s) => s.status === 'online' && s.payment_ready === true);
+  candidates.sort((a, b) => popularityScore(b) - popularityScore(a));
+
+  const results = [];
+  for (const svc of candidates.slice(0, SEED_SCAN_LIMIT)) {
+    const resolved = await resolveServiceEndpoint(svc);
+    if (resolved) results.push(resolved);
+  }
+
+  if (results.length === 0) {
+    console.log('[seed] x402-list.com discovery returned no usable endpoints — using fallback endpoint list');
+    return FALLBACK_ENDPOINTS;
+  }
+  return results;
+}
+
+// One-time initial population of the tracking list, gated on Redis having no
+// tracked endpoints at all yet (not just on the flag, so a manually-cleared
+// flag can't accidentally re-seed over real data).
+async function seedTrackedEndpoints() {
+  const alreadySeeded = await redis.get(SEEDED_FLAG_KEY);
+  if (alreadySeeded) return;
+
+  const existingKeys = await redis.keys(`${ENDPOINT_SUBJECT_PREFIX}*`);
+  if (existingKeys.length > 0) {
+    await redis.set(SEEDED_FLAG_KEY, 'true');
+    return;
+  }
+
+  console.log(`[seed] no tracked endpoints yet — seeding up to ${SEED_COUNT} from x402-list.com by usage...`);
+  const candidates = await fetchSeedCandidates();
+
+  let seeded = 0;
+  for (const candidate of candidates) {
+    if (seeded >= SEED_COUNT) break;
+    const { subject } = await checkEndpoint(candidate);
+    if (!subject) continue;
+    await redis.set(`${ENDPOINT_SUBJECT_PREFIX}${candidate.url}`, subject);
+    seeded += 1;
+    console.log(`[seed] (${seeded}/${SEED_COUNT}) ${candidate.url} -> ${subject}`);
+  }
+
+  await redis.set(SEEDED_FLAG_KEY, 'true');
+  console.log(`[seed] done: ${seeded}/${SEED_COUNT} endpoints seeded`);
+}
+
+// Caps tracking at MAX_TRACKED distinct subjects, evicting the ones with the
+// least accumulated reliability-history first (least established = least
+// costly to drop, and the next thing to re-discover if it's still active).
+async function enforceTrackingCap() {
+  const keys = await redis.keys(`${ENDPOINT_SUBJECT_PREFIX}*`);
+  if (!keys.length) return;
+
+  const subjects = await Promise.all(keys.map((key) => redis.get(key)));
+  const urlsBySubject = new Map();
+  keys.forEach((key, i) => {
+    const subject = subjects[i];
+    if (!subject) return;
+    const url = key.slice(ENDPOINT_SUBJECT_PREFIX.length);
+    if (!urlsBySubject.has(subject)) urlsBySubject.set(subject, []);
+    urlsBySubject.get(subject).push(url);
+  });
+
+  const distinctSubjects = [...urlsBySubject.keys()];
+  if (distinctSubjects.length <= MAX_TRACKED) return;
+
+  const withHistoryLen = await Promise.all(
+    distinctSubjects.map(async (subject) => ({
+      subject,
+      historyLen: await redis.llen(`${RELIABILITY_HISTORY_PREFIX}${subject}`),
+    }))
+  );
+  withHistoryLen.sort((a, b) => a.historyLen - b.historyLen);
+
+  const excess = withHistoryLen.length - MAX_TRACKED;
+  for (const { subject, historyLen } of withHistoryLen.slice(0, excess)) {
+    const urls = urlsBySubject.get(subject);
+    for (const url of urls) {
+      await redis.del(`${ENDPOINT_SUBJECT_PREFIX}${url}`);
+    }
+    console.log(`[cap] evicted subject=${subject} (history=${historyLen}, urls=${urls.join(', ')}) — over MAX_TRACKED=${MAX_TRACKED}`);
+  }
 }
 
 // Every url this oracle has ever resolved a payTo for, regardless of whether
@@ -252,6 +381,9 @@ async function recordResult(subject, passed) {
 
 async function runCycle(registry) {
   console.log(`\n=== scan cycle ${new Date().toISOString()} ===`);
+
+  await seedTrackedEndpoints();
+  await enforceTrackingCap();
 
   const discovered = await fetchActiveEndpoints();
   const tracked = await loadTrackedEndpoints();

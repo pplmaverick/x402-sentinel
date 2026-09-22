@@ -28,6 +28,31 @@ const MAX_TRACKED = 30; // total distinct subjects tracked (seed + discovery + w
 const SEED_COUNT = 20; // one-time initial population, only when nothing is tracked yet
 const SEED_SCAN_LIMIT = 60; // listed services we're willing to look at (across pages) to find SEED_COUNT resolvable ones
 
+// EAS (Ethereum Attestation Service) — Base predeploy, same address on every
+// OP Stack network (mainnet and Sepolia both verified against the official
+// eas-contracts deployment artifacts before wiring this up).
+const EAS_ADDRESS = '0x4200000000000000000000000000000000000021';
+// Schema: address subject, uint256 score, uint64 timestamp, bytes32 refUID —
+// registered non-revocable; score updates are expressed by chaining a new
+// attestation's refUID to the previous one, not by revoking. Read from env
+// rather than hardcoded so the same code runs against the Sepolia schema
+// during testing and the mainnet schema in production without an edit.
+const EAS_SCHEMA_UID = process.env.EAS_SCHEMA_UID;
+const EAS_SCHEMA_TYPES = ['address', 'uint256', 'uint64', 'bytes32'];
+const EAS_ZERO_UID = '0x0000000000000000000000000000000000000000000000000000000000000000';
+// Independent of INTERVAL_MS (the 6h internal-mapping cadence) — attestation
+// is throttled separately per the cost analysis (30 subjects x 4/day would
+// run ~10x the reasoned monthly budget). Checked once per runCycle() rather
+// than on its own timer so there's only ever one place issuing on-chain txs.
+const EAS_ATTEST_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const EAS_LAST_ATTEST_AT_KEY = 'x402-sentinel:eas-last-attest-at';
+const EAS_LATEST_UID_PREFIX = 'x402-sentinel:eas-latest-uid:';
+
+const EAS_ABI = [
+  'function multiAttest((bytes32 schema,(address recipient,uint64 expirationTime,bool revocable,bytes32 refUID,bytes data,uint256 value)[] data)[] multiRequests) external payable returns (bytes32[])',
+  'event Attested(address indexed recipient, address indexed attester, bytes32 uid, bytes32 indexed schema)',
+];
+
 const X402_LIST_BASE = 'https://x402-list.com/api/v1';
 const DISCOVERY_TIMEOUT_MS = 8000;
 const DISCOVERY_TARGET = 8; // final candidate list size (5-10 per spec)
@@ -388,7 +413,124 @@ async function recordResult(subject, passed) {
   return Math.round(((passes + 1) / (total + 2)) * 100);
 }
 
-async function runCycle(registry) {
+// Read-only version of recordResult's scoring half — same Laplace-smoothed
+// formula, but against the history as it stands right now rather than after
+// pushing a new result. EAS attestation runs on its own 24h cadence, not
+// tied to a probe that just happened, so it needs "what's the subject's
+// current score" independent of any single check.
+async function currentScore(subject) {
+  const history = await redis.lrange(`${RELIABILITY_HISTORY_PREFIX}${subject}`, 0, -1);
+  const total = history.length;
+  const passes = history.filter((v) => Number(v) === 1).length;
+  return Math.round(((passes + 1) / (total + 2)) * 100);
+}
+
+// Every subject with at least one recorded check (sampleSize >= 1) — i.e.
+// every reliability-history:* key that isn't empty. UNKNOWN subjects
+// (sampleSize 0) are deliberately excluded from attestation: nothing has
+// been observed about them yet, so there's nothing worth putting on chain.
+async function subjectsWithSampleSize() {
+  let keys;
+  try {
+    keys = await redis.keys(`${RELIABILITY_HISTORY_PREFIX}*`);
+  } catch (err) {
+    console.log(`[eas] Redis lookup for reliability-history failed: ${err.message}`);
+    return [];
+  }
+  if (!keys.length) return [];
+
+  const lens = await Promise.all(keys.map((key) => redis.llen(key)));
+  return keys
+    .map((key, i) => ({ subject: key.slice(RELIABILITY_HISTORY_PREFIX.length), sampleSize: lens[i] }))
+    .filter((e) => e.sampleSize >= 1);
+}
+
+// Runs the EAS attestation pass if EAS_ATTEST_INTERVAL_MS has elapsed since
+// the last one (tracked in Redis, independent of the 6h scan cadence this is
+// called from). Batches every qualifying subject into a single multiAttest()
+// call, chaining each subject's refUID to its own previous attestation UID
+// (also in Redis) rather than revoking — see EAS_SCHEMA_UID's comment.
+async function maybeRunEasAttestCycle(wallet) {
+  if (!EAS_SCHEMA_UID) {
+    console.log('[eas] EAS_SCHEMA_UID not set — skipping attestation pass');
+    return;
+  }
+
+  const lastAttestAt = await redis.get(EAS_LAST_ATTEST_AT_KEY);
+  const elapsed = lastAttestAt ? Date.now() - Number(lastAttestAt) : Infinity;
+  if (elapsed < EAS_ATTEST_INTERVAL_MS) {
+    console.log(`[eas] last attestation ${Math.round(elapsed / 3600_000)}h ago — waiting for 24h`);
+    return;
+  }
+
+  const candidates = await subjectsWithSampleSize();
+  if (!candidates.length) {
+    console.log('[eas] no subjects with sampleSize >= 1 yet — skipping this pass');
+    return;
+  }
+
+  const timestamp = Math.floor(Date.now() / 1000);
+  const abiCoder = ethers.AbiCoder.defaultAbiCoder();
+
+  const subjects = [];
+  const attestationData = [];
+  for (const { subject } of candidates) {
+    const score = await currentScore(subject);
+    const refUID = (await redis.get(`${EAS_LATEST_UID_PREFIX}${subject}`)) || EAS_ZERO_UID;
+
+    subjects.push(subject);
+    attestationData.push({
+      recipient: subject,
+      expirationTime: 0,
+      revocable: false,
+      refUID,
+      data: abiCoder.encode(EAS_SCHEMA_TYPES, [subject, score, timestamp, refUID]),
+      value: 0,
+    });
+  }
+
+  console.log(`[eas] attesting ${subjects.length} subject(s) via multiAttest`);
+
+  const eas = new ethers.Contract(EAS_ADDRESS, EAS_ABI, wallet);
+  let receipt;
+  try {
+    const tx = await eas.multiAttest([{ schema: EAS_SCHEMA_UID, data: attestationData }]);
+    console.log(`[eas] multiAttest tx sent: ${tx.hash}`);
+    receipt = await tx.wait();
+    console.log(`[eas] confirmed in block ${receipt.blockNumber}`);
+  } catch (err) {
+    console.log(`[eas] multiAttest failed: ${err.message}`);
+    return;
+  }
+
+  // Attested events fire in the same order multiAttest() processed
+  // attestationData, one per entry — zip them back to `subjects` by position
+  // rather than matching on-chain data, since uid isn't indexed (it's in the
+  // event's non-indexed data, not a topic we could filter/match on directly).
+  const iface = new ethers.Interface(EAS_ABI);
+  const uids = receipt.logs
+    .map((log) => {
+      try {
+        return iface.parseLog(log);
+      } catch {
+        return null;
+      }
+    })
+    .filter((parsed) => parsed?.name === 'Attested')
+    .map((parsed) => parsed.args.uid);
+
+  if (uids.length !== subjects.length) {
+    console.log(`[eas] expected ${subjects.length} Attested events, got ${uids.length} — refUID chain may be incomplete this round`);
+  }
+
+  for (let i = 0; i < uids.length; i++) {
+    await redis.set(`${EAS_LATEST_UID_PREFIX}${subjects[i]}`, uids[i]);
+  }
+  await redis.set(EAS_LAST_ATTEST_AT_KEY, String(Date.now()));
+  console.log(`[eas] recorded ${uids.length} new attestation UID(s)`);
+}
+
+async function runCycle(registry, wallet) {
   console.log(`\n=== scan cycle ${new Date().toISOString()} ===`);
 
   await seedTrackedEndpoints();
@@ -466,6 +608,12 @@ async function runCycle(registry) {
   // once more so the cycle never ends with more than MAX_TRACKED regardless of
   // what happened while it ran.
   await enforceTrackingCap();
+
+  // Checked every 6h cycle but only actually attests once ~24h has elapsed —
+  // see EAS_ATTEST_INTERVAL_MS. Deliberately after the mapping-update loop
+  // above so a failed/slow EAS pass never blocks the existing on-chain score
+  // updates that matter for every request today.
+  await maybeRunEasAttestCycle(wallet);
 }
 
 async function main() {
@@ -482,9 +630,9 @@ async function main() {
   console.log(`oracle wallet: ${wallet.address}`);
   console.log(`registry: ${REGISTRY_ADDRESS}`);
 
-  await runCycle(registry);
+  await runCycle(registry, wallet);
   setInterval(() => {
-    runCycle(registry).catch((err) => console.error('cycle error:', err));
+    runCycle(registry, wallet).catch((err) => console.error('cycle error:', err));
   }, INTERVAL_MS);
 }
 

@@ -26,6 +26,10 @@ const MAX_LABEL_LENGTH = 200
 const LABELS_KEY = 'x402-sentinel:scan-labels'
 const TX_HASH_RE = /^0x[a-fA-F0-9]{64}$/
 const RELIABILITY_HISTORY_PREFIX = 'x402-sentinel:reliability-history:'
+// Same key oracle/reporter.js writes to after each successful EAS multiAttest
+// pass — see EAS_LATEST_UID_PREFIX there.
+const EAS_LATEST_UID_PREFIX = 'x402-sentinel:eas-latest-uid:'
+const EAS_EXPLORER_BASE = 'https://base.easscan.org/attestation/view/'
 
 const VERIFIED_EVENT = {
   type: 'event',
@@ -211,6 +215,10 @@ async function fetchReliability(receipts) {
     )
   )
 
+  const easUids = await Promise.all(
+    subjects.map((subject) => redis.get(`${EAS_LATEST_UID_PREFIX}${subject}`).catch(() => null))
+  )
+
   return receipts.map((r, i) => {
     const sampleSize = histories[i].length
     const isBlacklisted = blacklistFlags[i]
@@ -222,6 +230,10 @@ async function fetchReliability(receipts) {
         tracked: sampleSize > 0,
       },
       riskLabel: riskLabelFor({ isBlacklisted, score: r.score, sampleSize }),
+      // null when this subject hasn't been through an EAS attestation pass
+      // yet (oracle/reporter.js only attests once/24h, and only subjects
+      // with sampleSize >= 1) — not an error, just not attested yet.
+      attestationUrl: easUids[i] ? `${EAS_EXPLORER_BASE}${easUids[i]}` : null,
     }
   })
 }
@@ -246,6 +258,7 @@ async function handleGet(res) {
     endpointLabel: labels?.[r.receiptId] || null,
     reliability: extras[i].reliability,
     riskLabel: extras[i].riskLabel,
+    attestationUrl: extras[i].attestationUrl,
   }))
   res.status(200).json({ scans })
 }

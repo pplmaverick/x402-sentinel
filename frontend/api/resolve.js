@@ -17,6 +17,23 @@ const X402_LIST_BASE = 'https://x402-list.com/api/v1'
 // Same Redis instance oracle/reporter.js and frontend/api/scans.js use.
 const redis = Redis.fromEnv()
 const ENDPOINT_SUBJECT_PREFIX = 'x402-sentinel:endpoint-subject:'
+// Must match oracle/reporter.js's MAX_TRACKED — kept as a separate constant
+// rather than a shared import since this is a Vercel serverless function and
+// reporter.js is a standalone Node script deployed to a different host.
+const MAX_TRACKED = 30
+
+// True only when `subject` isn't already tracked under any url AND the
+// tracked set is already at capacity — i.e. writing it would grow distinct
+// subject count past MAX_TRACKED. A subject already tracked (just a new or
+// changed url pointing at the same address) is always safe to write.
+async function isNewSubjectAtCap(subject) {
+  const keys = await redis.keys(`${ENDPOINT_SUBJECT_PREFIX}*`)
+  if (!keys.length) return false
+  const subjects = await Promise.all(keys.map((key) => redis.get(key)))
+  const distinct = new Set(subjects.filter(Boolean))
+  if (distinct.has(subject)) return false
+  return distinct.size >= MAX_TRACKED
+}
 
 // Both booleans an address must satisfy to be usable as a SentinelRegistry
 // subject — split out so callers can see which one failed, not just a single
@@ -234,11 +251,28 @@ export default async function handler(req, res) {
   }
 
   // Feed the resolved mapping to the oracle's tracking list (same Redis key
-  // oracle/reporter.js reads/writes). Overwrites unconditionally so a payTo
-  // change is picked up — scoring itself still only happens on the oracle's
-  // own schedule, this just tells it which subject to track this url under.
+  // oracle/reporter.js reads/writes), unless this would add a brand-new
+  // subject while already at MAX_TRACKED — oracle/reporter.js's own cap only
+  // re-checks on its 6h schedule, so without this gate a burst of website
+  // scans can push distinct-subject count arbitrarily far past the cap
+  // between oracle cycles. A subject already tracked (just a new/changed url)
+  // is unaffected — this only skips *new* subjects once at capacity, and
+  // never affects the resolve response itself: the user can still pay this
+  // endpoint, it just won't be picked up for reliability scoring.
+  let tracked = true
+  let trackingSkippedReason = null
   try {
-    await redis.set(`${ENDPOINT_SUBJECT_PREFIX}${url}`, result.payTo)
+    const subjectKey = `${ENDPOINT_SUBJECT_PREFIX}${url}`
+    const stored = await redis.get(subjectKey)
+    if (stored === result.payTo) {
+      // already correctly tracked, nothing to do
+    } else if (await isNewSubjectAtCap(result.payTo)) {
+      tracked = false
+      trackingSkippedReason = `already at MAX_TRACKED=${MAX_TRACKED}`
+      console.log(`[resolve] skipped new subject=${result.payTo} url=${url} — ${trackingSkippedReason}`)
+    } else {
+      await redis.set(subjectKey, result.payTo)
+    }
   } catch (err) {
     console.error('Failed to record endpoint-subject feedback:', err)
   }
@@ -248,6 +282,7 @@ export default async function handler(req, res) {
     status: result.status,
     subject: result.payTo,
     structuralCheck: { passed: true, checks },
+    tracking: { tracked, reason: trackingSkippedReason },
     error: null,
   })
 }

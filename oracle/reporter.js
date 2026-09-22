@@ -306,9 +306,14 @@ async function seedTrackedEndpoints() {
 // Caps tracking at MAX_TRACKED distinct subjects, evicting the ones with the
 // least accumulated reliability-history first (least established = least
 // costly to drop, and the next thing to re-discover if it's still active).
+// Returns the resulting set of distinct tracked subjects so callers can keep
+// a running count without re-scanning Redis — runCycle() uses this both to
+// gate new writes during the loop and to re-sweep once at the end, since a
+// single check at the start of the cycle doesn't catch subjects added while
+// the cycle's discovery/write-back loop is still running.
 async function enforceTrackingCap() {
   const keys = await redis.keys(`${ENDPOINT_SUBJECT_PREFIX}*`);
-  if (!keys.length) return;
+  if (!keys.length) return new Set();
 
   const subjects = await Promise.all(keys.map((key) => redis.get(key)));
   const urlsBySubject = new Map();
@@ -321,7 +326,7 @@ async function enforceTrackingCap() {
   });
 
   const distinctSubjects = [...urlsBySubject.keys()];
-  if (distinctSubjects.length <= MAX_TRACKED) return;
+  if (distinctSubjects.length <= MAX_TRACKED) return new Set(distinctSubjects);
 
   const withHistoryLen = await Promise.all(
     distinctSubjects.map(async (subject) => ({
@@ -332,13 +337,17 @@ async function enforceTrackingCap() {
   withHistoryLen.sort((a, b) => a.historyLen - b.historyLen);
 
   const excess = withHistoryLen.length - MAX_TRACKED;
+  const evicted = new Set();
   for (const { subject, historyLen } of withHistoryLen.slice(0, excess)) {
     const urls = urlsBySubject.get(subject);
     for (const url of urls) {
       await redis.del(`${ENDPOINT_SUBJECT_PREFIX}${url}`);
     }
+    evicted.add(subject);
     console.log(`[cap] evicted subject=${subject} (history=${historyLen}, urls=${urls.join(', ')}) — over MAX_TRACKED=${MAX_TRACKED}`);
   }
+
+  return new Set(distinctSubjects.filter((subject) => !evicted.has(subject)));
 }
 
 // Every url this oracle has ever resolved a payTo for, regardless of whether
@@ -383,7 +392,10 @@ async function runCycle(registry) {
   console.log(`\n=== scan cycle ${new Date().toISOString()} ===`);
 
   await seedTrackedEndpoints();
-  await enforceTrackingCap();
+  // trackedSubjects is kept in sync (added to, below) as the loop writes new
+  // subjects, so the MAX_TRACKED check stays accurate for the rest of this
+  // cycle without re-scanning Redis on every candidate.
+  const trackedSubjects = await enforceTrackingCap();
 
   const discovered = await fetchActiveEndpoints();
   const tracked = await loadTrackedEndpoints();
@@ -410,7 +422,17 @@ async function runCycle(registry) {
       const subjectKey = `${ENDPOINT_SUBJECT_PREFIX}${url}`;
       const stored = await redis.get(subjectKey);
       if (stored !== subject) {
+        // A subject already in trackedSubjects (existing address, just a new
+        // or changed url pointing at it) is always fine to write — it can't
+        // push distinct-subject count past MAX_TRACKED. Only a brand-new
+        // subject needs the cap check, since enforceTrackingCap() only ran
+        // once at the top of this cycle and won't see writes made since.
+        if (!trackedSubjects.has(subject) && trackedSubjects.size >= MAX_TRACKED) {
+          console.log(`[cap] skipped new subject=${subject} url=${url} — already at MAX_TRACKED=${MAX_TRACKED}`);
+          continue;
+        }
         await redis.set(subjectKey, subject);
+        trackedSubjects.add(subject);
         if (stored) {
           console.log(`[${url}] payTo changed from ${stored} to ${subject} — tracking under the new address`);
         }
@@ -438,6 +460,12 @@ async function runCycle(registry) {
       console.log(`[${url}] on-chain update failed: ${err.message}`);
     }
   }
+
+  // In-loop gating above only checks trackedSubjects, which can't account for
+  // concurrent writes from frontend/api/resolve.js during this cycle. Re-sweep
+  // once more so the cycle never ends with more than MAX_TRACKED regardless of
+  // what happened while it ran.
+  await enforceTrackingCap();
 }
 
 async function main() {

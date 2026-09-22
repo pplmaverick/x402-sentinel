@@ -425,10 +425,31 @@ async function currentScore(subject) {
   return Math.round(((passes + 1) / (total + 2)) * 100);
 }
 
-// Every subject with at least one recorded check (sampleSize >= 1) — i.e.
-// every reliability-history:* key that isn't empty. UNKNOWN subjects
-// (sampleSize 0) are deliberately excluded from attestation: nothing has
-// been observed about them yet, so there's nothing worth putting on chain.
+// The distinct subjects currently backing an active endpoint-subject:* entry
+// — same computation enforceTrackingCap() does internally, pulled out here
+// so subjectsWithSampleSize() can reuse the live tracking list as a
+// whitelist instead of maintaining a second source of truth.
+async function activeTrackedSubjects() {
+  let keys;
+  try {
+    keys = await redis.keys(`${ENDPOINT_SUBJECT_PREFIX}*`);
+  } catch (err) {
+    console.log(`[eas] Redis lookup for endpoint-subject failed: ${err.message}`);
+    return new Set();
+  }
+  if (!keys.length) return new Set();
+
+  const subjects = await Promise.all(keys.map((key) => redis.get(key)));
+  return new Set(subjects.filter(Boolean));
+}
+
+// Every subject with at least one recorded check (sampleSize >= 1) AND still
+// in the live endpoint-subject:* tracking list. UNKNOWN subjects (sampleSize
+// 0) are excluded because nothing has been observed about them yet; subjects
+// enforceTrackingCap() has since evicted are excluded too — their
+// reliability-history is never deleted on eviction (only the endpoint-subject
+// mapping is), so without this second check the EAS candidate list only ever
+// grows, never shrinking back down when the tracking list does.
 async function subjectsWithSampleSize() {
   let keys;
   try {
@@ -439,10 +460,14 @@ async function subjectsWithSampleSize() {
   }
   if (!keys.length) return [];
 
-  const lens = await Promise.all(keys.map((key) => redis.llen(key)));
+  const [lens, activeSubjects] = await Promise.all([
+    Promise.all(keys.map((key) => redis.llen(key))),
+    activeTrackedSubjects(),
+  ]);
+
   return keys
     .map((key, i) => ({ subject: key.slice(RELIABILITY_HISTORY_PREFIX.length), sampleSize: lens[i] }))
-    .filter((e) => e.sampleSize >= 1);
+    .filter((e) => e.sampleSize >= 1 && activeSubjects.has(e.subject));
 }
 
 // Runs the EAS attestation pass if EAS_ATTEST_INTERVAL_MS has elapsed since

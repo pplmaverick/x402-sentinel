@@ -7,6 +7,10 @@
 
 The first on-chain trust scoring layer defending against x402 Attack IV (Server-Selection Attacks) — [arXiv:2605.11781](https://arxiv.org/abs/2605.11781). Purpose-built for Base: trust scores live on-chain so any contract or agent can query them directly, with no API key and no off-chain trust broker in the loop.
 
+## Security
+
+This project has undergone a self-audit. See [AUDIT_NOTES.md](./AUDIT_NOTES.md) for full findings, including one confirmed and fixed SSRF vulnerability and **one known, unresolved architectural limitation: the oracle's hot wallet currently holds full owner privileges over `SentinelRegistry`**, not a scoped reporter role.
+
 ## 🌐 Live Demo
 
 https://x402-sentinel.vercel.app/

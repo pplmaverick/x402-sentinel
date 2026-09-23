@@ -8,6 +8,13 @@
 // arbitrary third-party APIs.
 
 import { Redis } from '@upstash/redis'
+// Node's global fetch() on Vercel is backed by its own internal bundled
+// undici — a different instance than the npm `undici` package ssrf-guard.js
+// builds the pinned Agent/dispatcher from. Passing that dispatcher to the
+// global fetch throws (their internal Dispatcher/Handler protocols aren't
+// interchangeable across undici instances), so this must use undici's own
+// exported fetch to guarantee both come from the same instance.
+import { fetch as undiciFetch } from 'undici'
 import { resolveAndValidateHost, pinnedDispatcher } from './ssrf-guard.js'
 
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/
@@ -101,7 +108,7 @@ async function fetchWithTimeout(url, options) {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
   try {
-    return await fetch(url, { ...options, signal: controller.signal })
+    return await undiciFetch(url, { ...options, signal: controller.signal })
   } finally {
     clearTimeout(timeout)
   }

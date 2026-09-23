@@ -4,6 +4,7 @@ import axios from 'axios';
 import { ethers } from 'ethers';
 import dotenv from 'dotenv';
 import { Redis } from '@upstash/redis';
+import { resolveAndValidateHost, pinnedAgentFor } from './ssrf-guard.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -125,15 +126,28 @@ function extractPayTo(response) {
 }
 
 // Requests `url` with `method` and scores the result. Never throws — connection
-// failures just come back as a zero score with no subject.
+// failures (including a blocked private/loopback/link-local target) just come
+// back as a zero score with no subject, same as any other unreachable url —
+// checkEndpoint()'s caller already skips to the next candidate on this shape,
+// so a blocked url can't stall or crash a whole scan cycle.
 async function probeOnce(url, method) {
+  let validated;
+  try {
+    validated = await resolveAndValidateHost(url);
+  } catch (err) {
+    return { connected: false, status: null, subject: null, score: 0, error: err.message };
+  }
+
   let response;
   try {
+    const agent = pinnedAgentFor(validated.url.protocol, validated.ip, validated.family);
     response = await axios.request({
       url,
       method,
       timeout: REQUEST_TIMEOUT_MS,
       validateStatus: () => true,
+      httpAgent: agent,
+      httpsAgent: agent,
     });
   } catch (err) {
     return { connected: false, status: null, subject: null, score: 0, error: err.message };

@@ -8,6 +8,7 @@
 // arbitrary third-party APIs.
 
 import { Redis } from '@upstash/redis'
+import { resolveAndValidateHost, pinnedDispatcher } from './ssrf-guard.js'
 
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
@@ -107,11 +108,22 @@ async function fetchWithTimeout(url, options) {
 }
 
 // Requests `url` with `method` and extracts a payTo from whatever comes back.
-// Never throws — connection failures just surface as a null payTo.
+// Never throws — connection failures (including a blocked private/loopback/
+// link-local target) just surface as a null payTo, in the same shape, so
+// callers can't distinguish "SSRF guard blocked this" from any other
+// connection failure — that distinction stays server-side only, in whatever
+// this function is called with, never in the response sent back to a caller.
 async function probe(url, method) {
+  let validated
+  try {
+    validated = await resolveAndValidateHost(url)
+  } catch (err) {
+    return { status: null, payTo: null, error: `connection failed: ${err.message}` }
+  }
+
   let response
   try {
-    response = await fetchWithTimeout(url, { method })
+    response = await fetchWithTimeout(url, { method, dispatcher: pinnedDispatcher(validated.ip, validated.family) })
   } catch (err) {
     return { status: null, payTo: null, error: `connection failed: ${err.message}` }
   }

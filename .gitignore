@@ -36,3 +36,7 @@
 .env*
 .claude
 CLAUDE.md
+
+# reference-model test artifacts
+tests/reference/last_diffs.json
+__pycache__/
